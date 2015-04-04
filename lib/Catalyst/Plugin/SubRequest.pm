@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Plack::Request;
 
-our $VERSION = '0.20';
+our $VERSION = '0.21';
 
 =head1 NAME
 
@@ -92,6 +92,11 @@ sub sub_request_response {
   local $env->{QUERY_STRING} = $uri->query || '';
   local $env->{PATH_INFO}    = $path;
   local $env->{REQUEST_URI}  = $env->{SCRIPT_NAME} . $path;
+
+  # Jump through a few hoops for backcompat with pre 5.9007x
+  local($env->{&Catalyst::Middleware::Stash::PSGI_KEY}) = &Catalyst::Middleware::Stash::_create_stash()
+    if $INC{'Catalyst/Middleware/Stash.pm'};
+
   $env->{REQUEST_URI} =~ s|//|/|g;
   my $class = ref($c) || $c;
 
@@ -102,17 +107,29 @@ sub sub_request_response {
 
   # need this so that
   my $writer = Catalyst::Plugin::SubRequest::Writer->new;
-  my $response_cb = sub { $writer };
+  my $response_cb = sub {
+    my $response = shift;
+    my ($status, $headers, $body) = @$response;
+    if($body) {
+      return;
+    } else {
+      return $writer;
+    }
+  };
+
   my $i_ctx = $class->prepare( env => $env, response_cb => $response_cb );
   $i_ctx->stash($stash);
   $i_ctx->dispatch;
   $i_ctx->finalize;
   $c->stats->profile( end => 'subrequest: ' . $path ) if $c->debug;
 
-  $i_ctx->response->body($writer->body);
+  if($writer->_is_closed) {
+    $i_ctx->response->body($writer->body);
+  }
 
   return $i_ctx->response;
 }
+
 
 package Catalyst::Plugin::SubRequest::Writer;
 use Moose;
